@@ -11,9 +11,9 @@
 
 using interface::Queue;
 
-class DataSet {
+class TestSet {
  public:
-  DataSet(int size) {
+  TestSet(int size) {
     data_.resize(size);
     mark_.resize(size);
     for (int i = 0; i < size; i++) {
@@ -22,8 +22,8 @@ class DataSet {
     std::shuffle(data_.begin(), data_.end(), std::random_device());
   }
 
-  bool Produce(int& data) {
-    int next = produced_.fetch_add(1);
+  bool Peek(int& data) {
+    int next = next_++;
     if (next < data_.size()) {
       data = data_[next];
       return true;
@@ -31,67 +31,68 @@ class DataSet {
     return false;
   }
 
-  void Consume(int data) {
+  void Mark(int data) {
     mark_[data - 1] = data;
-    consumed_.fetch_add(1);
+    marked_++;
   }
 
-  bool Check() {
-    if (consumed_ != mark_.size()) {
-      return false;
-    }
+  bool Done() {
+    return marked_ == mark_.size();
+  }
+
+  void Check() {
     for (int i = 0; i < mark_.size(); i++) {
       assert(mark_[i] == i + 1);
     }
-    return true;
   }
 
  private:
   std::vector<int> data_;
+  std::atomic<int> next_ {0};
   std::vector<int> mark_;
-  std::atomic<int> produced_ {0};
-  std::atomic<int> consumed_ {0};
+  std::atomic<int> marked_ {0};
 };
 
-void producer(Queue* q, DataSet* set) {
+void producer(Queue* q, TestSet* t) {
   int data;
-  while (set->Produce(data)) {
+  while (t->Peek(data)) {
     while (!q->Enqueue(data));
   }
 }
 
-void consumer(Queue* q, DataSet* set) {
+void consumer(Queue* q, TestSet* t) {
   int data;
-  while (!set->Check()) {
+  while (!t->Done()) {
     if (q->Dequeue(data)) {
-      set->Consume(data);
+      t->Mark(data);
     }
   }
 }
 
-void test(Queue* q, int set_size, int num_producers, int num_consumers) {
-  auto set = std::make_unique<DataSet>(set_size);
+void run_test(Queue* q, int test_size, int num_producers, int num_consumers) {
+  auto t = std::make_unique<TestSet>(test_size);
   std::vector<std::thread> threads;
   for (int i = 0; i < num_producers; i++) {
-    threads.emplace_back(producer, q, set.get());
+    threads.emplace_back(producer, q, t.get());
   }
   for (int i = 0; i < num_consumers; i++) {
-    threads.emplace_back(consumer, q, set.get());
+    threads.emplace_back(consumer, q, t.get());
   }
   for (int i = 0; i < threads.size(); i++) {
     threads[i].join();
   }
+  t->Check();
 }
 
 int main(int argc, char* argv[]) {
   int size = 4096;
   {
     auto q = std::make_unique<bounded_mpmc::Queue>(size);
-    test(q.get(), size, 10, 10);
+    run_test(q.get(), size, 10, 10);
   }
   {
     auto q = std::make_unique<non_intrusive_mpsc::Queue>();
-    test(q.get(), size, 10, 1);
+    run_test(q.get(), size, 10, 1);
   }
   return 0;
 }
